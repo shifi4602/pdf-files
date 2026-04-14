@@ -1,0 +1,22 @@
+# Dependencies / binaries
+poppler/
+tess_env/
+
+# Output and samples
+output/
+samples/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Virtual environments
+venv/
+.env/
+
+# Test cache
+.pytest_cache/
+
+# IDE
+.vscode/
