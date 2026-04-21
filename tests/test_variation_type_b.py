@@ -33,10 +33,18 @@ def test_exit_always_after_entry(engine, sample_type_b_report):
             )
 
 
-def test_hourly_rate_unchanged(engine, sample_type_b_report):
-    original_rate = sample_type_b_report.summary.hourly_rate
+def test_hourly_rate_not_below_minimum(engine, sample_type_b_report):
+    """Hourly rate in the varied report must be at least the 33 ILS minimum."""
+    from decimal import Decimal
+    MIN_RATE = Decimal("33")
     varied = engine.apply(sample_type_b_report)
-    assert varied.summary.hourly_rate == original_rate
+    if varied.summary.hourly_rate is not None:
+        assert varied.summary.hourly_rate >= MIN_RATE
+
+    # Rate above the minimum must stay unchanged (it's a contract rate)
+    original_rate = sample_type_b_report.summary.hourly_rate
+    if original_rate is not None and original_rate >= MIN_RATE:
+        assert varied.summary.hourly_rate == original_rate
 
 
 def test_payment_equals_hours_times_rate(engine, sample_type_b_report):

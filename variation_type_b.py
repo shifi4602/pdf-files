@@ -9,6 +9,8 @@ from models import (
     ReportType, ShiftTime, WorkDay,
 )
 
+_MIN_HOURLY_RATE = Decimal("33")
+
 
 class TypeBVariationEngine(IVariationEngine):
     """
@@ -98,6 +100,8 @@ class TypeBVariationEngine(IVariationEngine):
         ).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
         hourly_rate   = original.hourly_rate if original else None
+        if hourly_rate is not None:
+            hourly_rate = max(hourly_rate, _MIN_HOURLY_RATE)
         total_payment = (
             (total_hours * hourly_rate).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
             if hourly_rate else None
