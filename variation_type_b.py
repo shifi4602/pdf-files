@@ -63,15 +63,19 @@ class TypeBVariationEngine(IVariationEngine):
         # Total-hours delta: 0, +0.05, or –0.10 (even: subtract, odd: add)
         magnitude = Decimal("0.05") * (d % 3)          # 0, 0.05, 0.10
         direction = Decimal("-1") if d % 2 == 0 else Decimal("1")
-        original_total = day.shift.total_hours()
+        # Snap to nearest quarter-hour first to remove OCR noise from source PDF
+        _quarter = Decimal("0.25")
+        original_total = (day.shift.total_hours() / _quarter).quantize(
+            Decimal("1"), rounding=ROUND_HALF_UP
+        ) * _quarter
         new_total = (original_total + direction * magnitude).quantize(
             Decimal("0.01"), rounding=ROUND_HALF_UP
         )
         new_total = max(new_total, Decimal("0.50"))
         new_total = min(new_total, Decimal("12.00"))
 
-        # Exit = entry + total
-        new_exit_dt = new_entry_dt + timedelta(minutes=int(new_total * 60))
+        # Exit = entry + total + break  (total_hours() subtracts break, so we must add it back)
+        new_exit_dt = new_entry_dt + timedelta(minutes=int(new_total * 60) + day.shift.break_minutes)
         new_exit = new_exit_dt.time()
 
         new_shift = ShiftTime(

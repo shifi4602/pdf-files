@@ -124,7 +124,8 @@ class TypeBGenerator(IGenerator):
                 exit_ = day.shift.exit.strftime("%H:%M")
                 total = _f(day.shift.total_hours())
             else:
-                entry = exit_ = total = ""
+                entry = exit_ = ""
+                total = "0.00" if not is_special else ""
 
             notes = _h(day.notes) if day.notes else ""
             table_data.append([notes, total, exit_, entry, day_name, date_str])

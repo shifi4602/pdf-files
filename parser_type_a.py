@@ -1,6 +1,7 @@
 from __future__ import annotations
 import re
-from datetime import date, time
+from calendar import monthrange
+from datetime import date, time, timedelta
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
@@ -16,6 +17,11 @@ _DATE_RE = re.compile(r"(\d{1,2})[/.](\d{1,2})[/.](\d{2,4})")
 _TIME_RE = re.compile(r"\b(\d{1,2}):(\d{2})\b")
 
 _DAY_NAMES = {"ראשון", "שני", "שלישי", "רביעי", "חמישי", "שישי", "שבת"}
+
+_HEB_WEEKDAY: dict[str, int] = {
+    "ראשון": 6, "שני": 0, "שלישי": 1, "רביעי": 2,
+    "חמישי": 3, "שישי": 4, "שבת": 5,
+}
 
 
 def _parse_dec(s: str) -> Decimal:
@@ -45,11 +51,23 @@ class TypeAParser(IParser):
         if not rows:
             rows = self._text_to_rows(text)
 
-        days: list[WorkDay] = []
+        raw: list[tuple[WorkDay | None, str]] = []
         for row in rows:
+            row_str = " ".join(str(c) for c in row)
             day = self._parse_row(row)
-            if day:
-                days.append(day)
+            raw.append((day, row_str))
+
+        anchored = [wd for wd, _ in raw if wd and wd.date.year > 1900]
+        unanchored = [wd for wd, _ in raw if wd and wd.date.year <= 1900]
+
+        ref_month, ref_year = self._month_year(anchored)
+
+        # Gap-fill only when undated rows outnumber dated rows —
+        # that signals genuine OCR date-drop, not duplicate artefacts.
+        if ref_month and ref_year and len(unanchored) > len(anchored):
+            days = self._fill_undated_rows(raw, ref_month, ref_year)
+        else:
+            days = anchored
 
         summary = self._build_summary(days, text)
         month, year = self._month_year(days)
@@ -82,7 +100,10 @@ class TypeAParser(IParser):
     def _text_to_rows(self, text: str) -> list[list[str]]:
         rows = []
         for line in text.splitlines():
-            if _DATE_RE.search(line):
+            has_date = bool(_DATE_RE.search(line))
+            has_day  = any(name in line for name in _DAY_NAMES)
+            has_times = len(_TIME_RE.findall(line)) >= 2
+            if has_date or (has_day and has_times):
                 rows.append(line.split())
         return rows
 
@@ -93,18 +114,24 @@ class TypeAParser(IParser):
 
         m = _DATE_RE.search(row_str)
         if not m:
-            return None
+            # No full date — accept if the row has a day name AND ≥2 time tokens.
+            # Date will be assigned by parse() gap-filler.
+            if not any(name in row_str for name in _DAY_NAMES):
+                return None
+            if len(_TIME_RE.findall(row_str)) < 2:
+                return None
+            work_date = date(1900, 1, 1)  # placeholder
+        else:
+            day_n  = int(m.group(1))
+            mon_n  = int(m.group(2))
+            year_n = int(m.group(3))
+            if year_n < 100:
+                year_n += 2000
 
-        day_n  = int(m.group(1))
-        mon_n  = int(m.group(2))
-        year_n = int(m.group(3))
-        if year_n < 100:
-            year_n += 2000
-
-        try:
-            work_date = date(year_n, mon_n, day_n)
-        except ValueError:
-            return None
+            try:
+                work_date = date(year_n, mon_n, day_n)
+            except ValueError:
+                return None
 
         day_type = DayType.SHABBAT if "שבת" in row_str else DayType.REGULAR
 
@@ -210,8 +237,79 @@ class TypeAParser(IParser):
         m = re.search(r'הנשר כח אדם בע["\u05f4]?מ', text)
         return 'הנשר כח אדם בע"מ' if m else ""
 
+    # ── gap-filling for undated rows ──────────────────────────────────────────
+
+    def _fill_undated_rows(
+        self,
+        raw: list[tuple[WorkDay | None, str]],
+        ref_month: int,
+        ref_year: int,
+    ) -> list[WorkDay]:
+        """Assign dates to placeholder rows (date == 1900-01-01)."""
+        used: set[date] = {
+            wd.date for wd, _ in raw if wd and wd.date.year > 1900
+        }
+        last_date: date = date(ref_year, ref_month, 1) - timedelta(days=1)
+        result: list[WorkDay] = []
+
+        for wd, row_str in raw:
+            if wd is None:
+                continue
+            if wd.date.year > 1900:
+                last_date = max(last_date, wd.date)
+                result.append(wd)
+                continue
+            # Placeholder — find next available date with the matching weekday
+            weekday = self._find_weekday(row_str)
+            candidate = self._next_date_for_weekday(
+                weekday, last_date, ref_month, ref_year, used
+            )
+            if candidate is None:
+                continue
+            filled = WorkDay(
+                date=candidate,
+                day_type=wd.day_type,
+                shift=wd.shift,
+                breakdown=wd.breakdown,
+                location=wd.location,
+                notes=wd.notes,
+            )
+            result.append(filled)
+            used.add(candidate)
+            last_date = candidate
+
+        return sorted(result, key=lambda d: d.date)
+
+    @staticmethod
+    def _find_weekday(row_str: str) -> int | None:
+        for name, wd in _HEB_WEEKDAY.items():
+            if name in row_str:
+                return wd
+        return None
+
+    @staticmethod
+    def _next_date_for_weekday(
+        weekday: int | None,
+        after: date,
+        ref_month: int,
+        ref_year: int,
+        used: set[date],
+    ) -> date | None:
+        days_in_month = monthrange(ref_year, ref_month)[1]
+        for day_n in range(1, days_in_month + 1):
+            candidate = date(ref_year, ref_month, day_n)
+            if candidate <= after:
+                continue
+            if candidate in used:
+                continue
+            if weekday is not None and candidate.weekday() != weekday:
+                continue
+            return candidate
+        return None
+
     @staticmethod
     def _month_year(days: list[WorkDay]) -> tuple[int, int]:
-        if days:
-            return days[0].date.month, days[0].date.year
+        real = [d for d in days if d.date.year > 1900]
+        if real:
+            return real[0].date.month, real[0].date.year
         return 1, 2022
