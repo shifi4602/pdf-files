@@ -1,4 +1,5 @@
 from __future__ import annotations
+import re
 import sys
 from pathlib import Path
 
@@ -7,6 +8,11 @@ import pytesseract
 from PIL import Image, ImageFilter, ImageEnhance
 
 from interfaces import IPdfReader
+
+_DATE_PAT = re.compile(r'\d{1,2}[/.]\d{1,2}[/.]\d{2,4}')
+# A monthly attendance report should contain at least this many date rows.
+# If pdfplumber yields fewer, we also try OCR and use the richer result.
+_MIN_EXPECTED_DATES = 15
 
 # ── Windows install paths ──────────────────────────────────────────────────────
 # Poppler ships inside the project folder (poppler/Library/bin).
@@ -41,11 +47,18 @@ class PdfReader(IPdfReader):
 
     def read_text(self, pdf_path: Path) -> str:
         text = self._read_with_pdfplumber(pdf_path)
-        if text.strip():
+        date_count = len(_DATE_PAT.findall(text))
+        # Use pdfplumber result only when it contains enough date rows.
+        # A partially-embedded scanned PDF may yield some text but miss most
+        # rows; in that case we still run OCR and take whichever is richer.
+        if text.strip() and date_count >= _MIN_EXPECTED_DATES:
             return text
         # Fallback: convert pages to images and OCR them
         pages = self.read_pages(pdf_path)
-        return self._ocr_pages(pages)
+        ocr_text = self._ocr_pages(pages)
+        ocr_date_count = len(_DATE_PAT.findall(ocr_text))
+        # Prefer whichever source produced more date rows
+        return ocr_text if ocr_date_count > date_count else (text if text.strip() else ocr_text)
 
     def read_pages(self, pdf_path: Path) -> list[Image.Image]:
         from pdf2image import convert_from_path

@@ -1,7 +1,7 @@
 from __future__ import annotations
 import re
 from calendar import monthrange
-from datetime import date, time, timedelta
+from datetime import date, datetime, time, timedelta
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
@@ -15,7 +15,24 @@ from models import (
 
 _DATE_RE         = re.compile(r"(\d{1,2})[/.](\d{1,2})[/.](\d{2,4})")
 _DATE_PARTIAL_RE = re.compile(r"\b(\d{1,2})[/.](\d{2,4})\b")   # DD/YY – missing month
-_TIME_RE         = re.compile(r"\b(\d{1,2}):(\d{2})\b")
+_TIME_RE         = re.compile(r"\b(2[0-3]|[01]?\d):([0-5]\d)\b")  # valid HH:MM (0-23:00-59)
+
+# ── OCR artefact patterns ──────────────────────────────────────────────────────
+# ₪ followed by 2 digits → OCR misread "8:" as the shekel sign (₪ ≈ 8:)
+_SHEKEL_TIME_RE  = re.compile(r"₪(\d{2})\b")
+# 4-digit run that looks like HHMM for typical office hours (07-13), with
+# optional extra '0' (OCR colon artefact): 1105 → 11:05, 11005 → 11:05
+_HHMM_RE         = re.compile(r"\b(0?[89]|1[0-3])0?(\d{2})\b")
+# 5-digit: HH + non-zero OCR colon substitute + MM, e.g. 11501 → 11:01
+_HHMM5_RE        = re.compile(r"\b(1[0-3])[1-9]([0-5]\d)\b")
+
+
+def _normalize_ocr_row(s: str) -> str:
+    """Fix common OCR artefacts so that time values can be parsed normally."""
+    s = _SHEKEL_TIME_RE.sub(r"8:\1", s)   # ₪01 → 8:01
+    s = _HHMM5_RE.sub(r"\1:\2", s)        # 11501 → 11:01 (colon read as digit)
+    s = _HHMM_RE.sub(r"\1:\2", s)         # 1105 → 11:05, 11005 → 11:05
+    return s
 
 # Minimum hourly rate enforced by business rule (ILS)
 _MIN_HOURLY_RATE = Decimal("33")
@@ -57,8 +74,12 @@ class TypeBParser(IParser):
 
     def parse(self, text: str, pdf_path: Path) -> AttendanceReport:
         rows = self._extract_table_rows(pdf_path)
-        if not rows:
-            rows = self._text_to_rows(text)
+        # Always compare against text-derived rows and use whichever is richer.
+        # A partially-embedded scanned PDF may yield only some rows via
+        # pdfplumber while the OCR text (passed in as `text`) has all of them.
+        text_rows = self._text_to_rows(text)
+        if len(text_rows) > len(rows):
+            rows = text_rows
 
         # ── Pass 1: infer ref month / year from first unambiguous full date ────
         ref_month, ref_year = self._detect_period(rows, text)
@@ -138,7 +159,7 @@ class TypeBParser(IParser):
     def _text_to_rows(self, text: str) -> list[list[str]]:
         rows = []
         for line in text.splitlines():
-            s = line.strip()
+            s = _normalize_ocr_row(line.strip())
             if s and self._looks_like_data_row(s):
                 rows.append(s.split())
         return rows
@@ -455,15 +476,38 @@ class TypeBParser(IParser):
 
     @staticmethod
     def _build_workday(work_date: date, row_str: str) -> WorkDay:
+        row_str = _normalize_ocr_row(row_str)
         times = _TIME_RE.findall(row_str)
         shift: ShiftTime | None = None
         if len(times) >= 2:
             try:
                 entry = time(int(times[0][0]), int(times[0][1]))
                 exit_ = time(int(times[1][0]), int(times[1][1]))
-                shift = ShiftTime(entry=entry, exit=exit_, break_minutes=0)
+                # Swap if OCR order is reversed (both AM times with entry > exit)
+                if exit_ < entry:
+                    entry, exit_ = exit_, entry
+                candidate = ShiftTime(entry=entry, exit=exit_, break_minutes=0)
+                if candidate.is_valid():
+                    shift = candidate
             except ValueError:
                 pass
+        # Fallback: one readable time + a decimal total-hours value in the row
+        # e.g. "8:00 | 10:67 | 2.95" — use entry + total to compute exit
+        if shift is None and len(times) == 1:
+            total_m = re.search(r"\b([23])\.\d{2}\b", row_str)
+            if total_m:
+                try:
+                    entry = time(int(times[0][0]), int(times[0][1]))
+                    total_h = Decimal(total_m.group(0))
+                    from datetime import datetime
+                    exit_dt = datetime.combine(work_date, entry) + timedelta(
+                        minutes=int(total_h * 60)
+                    )
+                    candidate = ShiftTime(entry=entry, exit=exit_dt.time(), break_minutes=0)
+                    if candidate.is_valid():
+                        shift = candidate
+                except (ValueError, Exception):
+                    pass
 
         notes = ""
         for label in _HOLIDAY_LABELS:
