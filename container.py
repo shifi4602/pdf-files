@@ -1,14 +1,18 @@
 from __future__ import annotations
 from dependency_injector import containers, providers
 
-from pdf_reader       import PdfReader
-from detector         import KeywordDetector
-from parser_type_a    import TypeAParser
-from parser_type_b    import TypeBParser
-from variation_type_a import TypeAVariationEngine
-from variation_type_b import TypeBVariationEngine
-from generator_type_a import TypeAGenerator
-from generator_type_b import TypeBGenerator
+from infrastructure.pdf_reader   import PdfReader
+from infrastructure.detector     import KeywordDetector
+from parsers.parser_type_a       import TypeAParser
+from parsers.parser_type_b       import TypeBParser
+from generators.generator_type_a import TypeAGenerator
+from generators.generator_type_b import TypeBGenerator
+from transformation.strategies   import (
+    TypeATransformationStrategy,
+    TypeBTransformationStrategy,
+    ValidatingStrategyDecorator,
+)
+from transformation.service      import TransformationService
 
 
 class Container(containers.DeclarativeContainer):
@@ -39,9 +43,16 @@ class Container(containers.DeclarativeContainer):
     parser_a = providers.Singleton(TypeAParser)
     parser_b = providers.Singleton(TypeBParser)
 
-    # Variation engines — one per report type
-    variation_a = providers.Singleton(TypeAVariationEngine)
-    variation_b = providers.Singleton(TypeBVariationEngine)
+    # Transformation service — strategy registry wired here (Registry pattern).
+    # Each strategy is wrapped in ValidatingStrategyDecorator (Decorator pattern).
+    # Adding a new report type = one new strategy class + one registry entry.
+    transformation_service = providers.Singleton(
+        TransformationService,
+        strategy_registry={
+            "TYPE_A": ValidatingStrategyDecorator(TypeATransformationStrategy()),
+            "TYPE_B": ValidatingStrategyDecorator(TypeBTransformationStrategy()),
+        },
+    )
 
     # PDF generators — one per report type
     generator_a = providers.Singleton(TypeAGenerator)
@@ -49,5 +60,4 @@ class Container(containers.DeclarativeContainer):
 
     # ── Collections (resolved at call time) ───────────────────────────────────
     parsers    = providers.List(parser_a,    parser_b)
-    variations = providers.List(variation_a, variation_b)
     generators = providers.List(generator_a, generator_b)

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from interfaces import IDetector
+from core.interfaces import IDetector
 from models import ReportType
 
 # Signature keywords for each type.

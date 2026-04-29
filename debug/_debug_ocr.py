@@ -1,8 +1,8 @@
 """Quick debug: show parsed rows after normalization"""
 from pathlib import Path
 import re
-from pdf_reader import PdfReader
-from parser_type_b import TypeBParser, _normalize_ocr_row
+from infrastructure.pdf_reader import PdfReader
+from parsers.parser_type_b import TypeBParser, _normalize_ocr_row
 
 p = Path("samples/n_r_10_n.pdf")
 

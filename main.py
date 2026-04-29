@@ -18,11 +18,11 @@ def run_pipeline(input_path: Path, output_path: Path) -> None:
     """
     Full pipeline:
       PDF file
-        → [PdfReader]         extract text  (pdfplumber / OCR)
-        → [KeywordDetector]   identify type (A or B)
-        → [TypeA/BParser]     parse into AttendanceReport
-        → [TypeA/BVariation]  apply deterministic variation rules
-        → [TypeA/BGenerator]  write output PDF
+        → [PdfReader]              extract text  (pdfplumber / OCR)
+        → [KeywordDetector]        identify type (A or B)
+        → [TypeA/BParser]          parse into AttendanceReport
+        → [TransformationService]  apply variation rules (Strategy + Decorator)
+        → [TypeA/BGenerator]       write output PDF
 
     Every component is resolved from the DI container — nothing here
     instantiates concrete classes directly.
@@ -32,7 +32,7 @@ def run_pipeline(input_path: Path, output_path: Path) -> None:
     reader     = container.pdf_reader()
     detector   = container.detector()
     parsers    = container.parsers()
-    variations = container.variations()
+    service    = container.transformation_service()
     generators = container.generators()
 
     # Step 1 — Read
@@ -55,12 +55,9 @@ def run_pipeline(input_path: Path, output_path: Path) -> None:
     click.echo(f"      {len(report.days)} day-rows parsed  |  "
                f"{report.summary.total_days if report.summary else '?'} work days")
 
-    # Step 4 — Vary + generate
-    click.echo("[4/4] Applying variation rules and generating PDF …")
-    engine = next((e for e in variations if e.can_handle(report_type)), None)
-    if engine is None:
-        raise RuntimeError(f"No variation engine for {report_type}")
-    varied = engine.apply(report)
+    # Step 4 — Transform + generate
+    click.echo("[4/4] Applying transformation rules and generating PDF …")
+    varied = service.transform(report)
 
     generator = next((g for g in generators if g.can_generate(report_type)), None)
     if generator is None:

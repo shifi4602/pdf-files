@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pdfplumber
 
-from interfaces import IParser
+from core.interfaces import BaseParser
 from models import (
     AttendanceReport, DayType, ReportSummary,
     ReportType, ShiftTime, WorkDay,
@@ -56,53 +56,54 @@ def _parse_dec(s: str) -> Decimal:
         return Decimal("0")
 
 
-class TypeBParser(IParser):
+class TypeBParser(BaseParser):
     """
     Parses Type B reports (כרטיס עובד).
 
     Column order (RTL physical):
       תאריך | יום בשבוע | שעת כניסה | שעת יציאה | סה"כ שעות | הערות
 
-    Summary box (top of page):
-      סה"כ ימי עבודה | סה"כ שעות חודשיות | מחיר לשעה | סה"כ לתשלום
-
-    Shabbat / holiday rows have no shift times — only a label in הערות.
+    Template Method hooks:
+      _extract_rows   → unified extraction + period detection (stores ref on self)
+      _parse_row      → per-row WorkDay using self._ref_month / _ref_year
+      _post_process   → anchor-check, gap-fill, dedup, month-fill
+      _parse_summary  → total hours + hourly rate + payment
+      _assemble_report → final AttendanceReport construction
     """
+
+    def __init__(self) -> None:
+        self._ref_month: int | None = None
+        self._ref_year:  int | None = None
 
     def can_parse(self, report_type: ReportType) -> bool:
         return report_type == ReportType.TYPE_B
 
-    def parse(self, text: str, pdf_path: Path) -> AttendanceReport:
+    # ── Template Method hooks ──────────────────────────────────────────────────
+
+    def _extract_rows(self, text: str, pdf_path: Path) -> list[list[str]]:
         rows = self._extract_table_rows(pdf_path)
         # Always compare against text-derived rows and use whichever is richer.
-        # A partially-embedded scanned PDF may yield only some rows via
-        # pdfplumber while the OCR text (passed in as `text`) has all of them.
         text_rows = self._text_to_rows(text)
         if len(text_rows) > len(rows):
             rows = text_rows
+        # Detect reference period and store on self so _parse_row can use it.
+        self._ref_month, self._ref_year = self._detect_period(rows, text)
+        return rows
 
-        # ── Pass 1: infer ref month / year from first unambiguous full date ────
-        ref_month, ref_year = self._detect_period(rows, text)
+    def _post_process(
+        self,
+        raw_pairs: list[tuple[WorkDay | None, list[str]]],
+        text: str,
+        pdf_path: Path,
+    ) -> list[WorkDay]:
+        # Convert to (WorkDay|None, row_str) pairs expected by the validators.
+        parsed: list[tuple[WorkDay | None, str]] = [
+            (wd, " ".join(str(c) for c in row)) for wd, row in raw_pairs
+        ]
+        parsed = self._validate_against_anchors(parsed, self._ref_month, self._ref_year)
+        parsed = self._fill_gaps(parsed, self._ref_month, self._ref_year)
 
-        # ── Pass 2: parse every row (strict + partial-date + weekday hints) ───
-        # Result: ordered list of (WorkDay | None, row_str)
-        parsed: list[tuple[WorkDay | None, str]] = []
-        for row in rows:
-            row_str = " ".join(str(c) for c in row)
-            wd = self._parse_row(row, ref_month=ref_month, ref_year=ref_year)
-            parsed.append((wd, row_str))
-
-        # ── Pass 3: identify "anchor" dates and check consistency ─────────────
-        # An anchor is a WorkDay whose date came from a full D/M/Y token AND the
-        # weekday name (when present) matches.  Provisional dates from partial tokens
-        # are validated against their surrounding anchors; if they jump outside the
-        # expected range they are cleared so Pass 4 can reassign them sequentially.
-        parsed = self._validate_against_anchors(parsed, ref_month, ref_year)
-
-        # ── Pass 4: weekday-based + sequential gap-filling ─────────────────────
-        parsed = self._fill_gaps(parsed, ref_month, ref_year)
-
-        # ── Collect & deduplicate (prefer row with shift) ──────────────────────
+        # Collect & deduplicate (prefer row with shift over row without)
         date_map: dict[date, WorkDay] = {}
         for wd, _ in parsed:
             if wd is None:
@@ -112,24 +113,24 @@ class TypeBParser(IParser):
                 date_map[wd.date] = wd
         days = sorted(date_map.values(), key=lambda d: d.date)
 
-        # ── Fill any remaining days of the month (e.g. Shabbat / missing rows) ─
+        # Fill any remaining calendar days of the month
+        ref_month, ref_year = self._ref_month, self._ref_year
         if ref_month and ref_year:
             days_in_month = monthrange(ref_year, ref_month)[1]
-            existing = {d.date for d in days}
+            existing_dates = {d.date for d in days}
             for day_num in range(1, days_in_month + 1):
                 d = date(ref_year, ref_month, day_num)
-                if d not in existing:
-                    # Determine day type by weekday: Saturday → Shabbat
-                    if d.weekday() == 5:
-                        day_type = DayType.SHABBAT
-                    else:
-                        day_type = DayType.REGULAR
+                if d not in existing_dates:
+                    day_type = DayType.SHABBAT if d.weekday() == 5 else DayType.REGULAR
                     days.append(WorkDay(date=d, day_type=day_type, shift=None))
             days.sort(key=lambda d: d.date)
 
-        summary = self._build_summary(days, text)
-        month, year = self._month_year(days, text)
+        return days
 
+    def _assemble_report(
+        self, days: list[WorkDay], summary: ReportSummary | None, text: str
+    ) -> AttendanceReport:
+        month, year = self._month_year(days, text)
         return AttendanceReport(
             report_type=ReportType.TYPE_B,
             employee_name=self._employee_name(text),
@@ -392,12 +393,9 @@ class TypeBParser(IParser):
 
     # ── row parsing ────────────────────────────────────────────────────────────
 
-    def _parse_row(
-        self,
-        cells: list[str],
-        ref_month: int | None = None,
-        ref_year:  int | None = None,
-    ) -> WorkDay | None:
+    def _parse_row(self, cells: list[str]) -> WorkDay | None:
+        ref_month = self._ref_month
+        ref_year  = self._ref_year
         row_str = " ".join(str(c) for c in cells)
 
         # Holiday / Shabbat rows: label present, no date
@@ -555,7 +553,7 @@ class TypeBParser(IParser):
 
     # ── summary ────────────────────────────────────────────────────────────────
 
-    def _build_summary(self, days: list[WorkDay], text: str) -> ReportSummary:
+    def _parse_summary(self, days: list[WorkDay], text: str) -> ReportSummary:
         work_days   = [d for d in days if d.shift is not None]
         total_hours = sum(d.shift.total_hours() for d in work_days if d.shift)
 

@@ -1,6 +1,6 @@
 """Unit tests for KeywordDetector."""
 import pytest
-from detector import KeywordDetector
+from infrastructure.detector import KeywordDetector
 from models import ReportType
 
 

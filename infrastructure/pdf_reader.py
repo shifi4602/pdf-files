@@ -7,7 +7,7 @@ import pdfplumber
 import pytesseract
 from PIL import Image, ImageFilter, ImageEnhance
 
-from interfaces import IPdfReader
+from core.interfaces import IPdfReader
 
 _DATE_PAT = re.compile(r'\d{1,2}[/.]\d{1,2}[/.]\d{2,4}')
 # A monthly attendance report should contain at least this many date rows.
@@ -17,7 +17,7 @@ _MIN_EXPECTED_DATES = 15
 # ── Windows install paths ──────────────────────────────────────────────────────
 # Poppler ships inside the project folder (poppler/Library/bin).
 # Tesseract ships inside the project folder (tess_env/Library/bin).
-_HERE         = Path(__file__).parent
+_HERE         = Path(__file__).parent.parent
 TESSERACT_CMD = str(_HERE / "tess_env" / "Library" / "bin" / "tesseract.exe")
 TESSDATA_DIR  = str(_HERE / "tess_env" / "share" / "tessdata")
 POPPLER_PATH  = str(_HERE / "poppler" / "Library" / "bin")

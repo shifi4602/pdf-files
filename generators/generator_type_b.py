@@ -11,10 +11,10 @@ from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
-from interfaces import IGenerator
+from core.interfaces import IGenerator
 from models import AttendanceReport, DayType, ReportSummary, ReportType
 
-FONT_PATH = Path(__file__).parent / "fonts" / "NotoSansHebrew-Regular.ttf"
+FONT_PATH = Path(__file__).parent.parent / "fonts" / "NotoSansHebrew-Regular.ttf"
 FONT_NAME = "NotoSansHebrew"
 
 _GREY  = colors.HexColor("#D3D3D3")

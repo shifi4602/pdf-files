@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pdfplumber
 
-from interfaces import IParser
+from core.interfaces import BaseParser
 from models import (
     AttendanceReport, DayType, HourBreakdown,
     ReportSummary, ReportType, ShiftTime, WorkDay,
@@ -31,47 +31,54 @@ def _parse_dec(s: str) -> Decimal:
         return Decimal("0")
 
 
-class TypeAParser(IParser):
+class TypeAParser(BaseParser):
     """
     Parses Type A reports (נשר כח אדם).
 
     Column order (RTL physical, read right-to-left on the page):
       תאריך | יום | מקום עבודה | כניסה | יציאה | הפסקה | סה"כ | 100% | 125% | 150% | שבת
 
-    Strategy:
-    1. Try pdfplumber structured table extraction (best for digital PDFs).
-    2. Fall back to regex-based line parsing on the raw OCR text.
+    Template Method hooks:
+      _extract_rows   → unified extraction (pdfplumber + regex fallback)
+      _parse_row      → per-row WorkDay construction
+      _post_process   → undated-row gap-filling
+      _parse_summary  → monthly totals + bonus/travel
+      _assemble_report → final AttendanceReport construction
     """
 
     def can_parse(self, report_type: ReportType) -> bool:
         return report_type == ReportType.TYPE_A
 
-    def parse(self, text: str, pdf_path: Path) -> AttendanceReport:
+    # ── Template Method hooks ──────────────────────────────────────────────────
+
+    def _extract_rows(self, text: str, pdf_path: Path) -> list[list[str]]:
         rows = self._extract_table_rows(pdf_path)
         if not rows:
             rows = self._text_to_rows(text)
+        return rows
 
-        raw: list[tuple[WorkDay | None, str]] = []
-        for row in rows:
-            row_str = " ".join(str(c) for c in row)
-            day = self._parse_row(row)
-            raw.append((day, row_str))
-
-        anchored = [wd for wd, _ in raw if wd and wd.date.year > 1900]
-        unanchored = [wd for wd, _ in raw if wd and wd.date.year <= 1900]
-
+    def _post_process(
+        self,
+        raw_pairs: list[tuple[WorkDay | None, list[str]]],
+        text: str,
+        pdf_path: Path,
+    ) -> list[WorkDay]:
+        str_pairs: list[tuple[WorkDay | None, str]] = [
+            (wd, " ".join(str(c) for c in row)) for wd, row in raw_pairs
+        ]
+        anchored   = [wd for wd, _ in str_pairs if wd and wd.date.year > 1900]
+        unanchored = [wd for wd, _ in str_pairs if wd and wd.date.year <= 1900]
         ref_month, ref_year = self._month_year(anchored)
-
         # Gap-fill only when undated rows outnumber dated rows —
         # that signals genuine OCR date-drop, not duplicate artefacts.
         if ref_month and ref_year and len(unanchored) > len(anchored):
-            days = self._fill_undated_rows(raw, ref_month, ref_year)
-        else:
-            days = anchored
+            return self._fill_undated_rows(str_pairs, ref_month, ref_year)
+        return anchored
 
-        summary = self._build_summary(days, text)
+    def _assemble_report(
+        self, days: list[WorkDay], summary: ReportSummary | None, text: str
+    ) -> AttendanceReport:
         month, year = self._month_year(days)
-
         return AttendanceReport(
             report_type=ReportType.TYPE_A,
             employee_name=self._employee_name(text),
@@ -81,7 +88,7 @@ class TypeAParser(IParser):
             summary=summary,
         )
 
-    # ── extraction ─────────────────────────────────────────────────────────────
+    # ── extraction helpers ─────────────────────────────────────────────────────
 
     def _extract_table_rows(self, pdf_path: Path) -> list[list[str]]:
         rows: list[list[str]] = []
@@ -198,7 +205,7 @@ class TypeAParser(IParser):
 
     # ── summary ────────────────────────────────────────────────────────────────
 
-    def _build_summary(self, days: list[WorkDay], text: str) -> ReportSummary:
+    def _parse_summary(self, days: list[WorkDay], text: str) -> ReportSummary:
         work_days  = [d for d in days if d.shift is not None]
         total_100  = sum(d.breakdown.hours_100     for d in days if d.breakdown)
         total_125  = sum(d.breakdown.hours_125     for d in days if d.breakdown)
