@@ -1,0 +1,29 @@
+# Windows-only bundled binaries — not needed in the Linux container
+poppler/
+tess_env/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*.pyo
+.mypy_cache/
+
+# Test artifacts
+.pytest_cache/
+tests/
+
+# Debug helpers
+debug/
+
+# Generated output
+output/
+
+# Editor / OS
+.vscode/
+.idea/
+*.DS_Store
+
+# Build artifacts
+*.egg-info/
+dist/
+build/

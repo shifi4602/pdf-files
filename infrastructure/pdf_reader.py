@@ -23,7 +23,8 @@ TESSDATA_DIR  = str(_HERE / "tess_env" / "share" / "tessdata")
 POPPLER_PATH  = str(_HERE / "poppler" / "Library" / "bin")
 
 import os as _os
-_os.environ["TESSDATA_PREFIX"] = TESSDATA_DIR
+if sys.platform == "win32":
+    _os.environ["TESSDATA_PREFIX"] = TESSDATA_DIR
 
 if sys.platform == "win32":
     pytesseract.pytesseract.tesseract_cmd = TESSERACT_CMD
